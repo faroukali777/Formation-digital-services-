@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>Formation digital services - الدخول</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #050509;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: #0f1117;
+      border-radius: 16px;
+      padding: 24px;
+      width: 90%;
+      max-width: 420px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      text-align: center;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      color: #00b7ff;
+    }
+    p {
+      margin: 0 0 18px;
+      font-size: 14px;
+      opacity: 0.8;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      margin: 6px 0 12px;
+      border-radius: 8px;
+      border: none;
+      outline: none;
+      font-size: 15px;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: none;
+      background: #00b7ff;
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    #msg {
+      margin-top: 12px;
+      font-size: 14px;
+      min-height: 20px;
+    }
+    #otp-section {
+      display: none;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Formation digital services</h1>
+    <p>أدخل الكود الذي أعطاك إياه البوت.<br>لو تبدل جهازك، الموقع يطلب منك OTP.</p>
+
+    <input id="code" placeholder="الكود من البوت">
+    <button id="btn-access" onclick="access()">تأكيد الكود</button>
+
+    <div id="otp-section">
+      <input id="otp" placeholder="OTP من الرسالة في البوت">
+      <button id="btn-otp" onclick="verifyOtp()">تأكيد OTP</button>
+    </div>
+
+    <div id="msg"></div>
+  </div>
+
+  <script>
+    async function access() {
+      const code = document.getElementById('code').value.trim();
+      const msg  = document.getElementById('msg');
+      const btn  = document.getElementById('btn-access');
+      const otpDiv = document.getElementById('otp-section');
+
+      if (!code) {
+        msg.textContent = "❌ أدخل الكود أولا.";
+        return;
+      }
+
+      btn.disabled = true;
+      msg.textContent = "⏳ جاري التحقق...";
+
+      try {
+        const res = await fetch('/api/access', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code })
+        });
+        const data = await res.json();
+
+        if (data.ok && data.invite_link) {
+          msg.innerHTML = "✅ تم التحقق! جاري تحويلك للقناة...";
+          window.location.href = data.invite_link;
+        } else {
+          if (data.need_otp) {
+            msg.textContent = data.message;
+            otpDiv.style.display = 'block';
+          } else {
+            msg.textContent = data.message || "❌ خطأ غير معروف.";
+          }
+        }
+
+      } catch (e) {
+        msg.textContent = "⚠ مشكل في الإتصال بالسيرفر.";
+      }
+
+      btn.disabled = false;
+    }
+
+    async function verifyOtp() {
+      const code = document.getElementById('code').value.trim();
+      const otp  = document.getElementById('otp').value.trim();
+      const msg  = document.getElementById('msg');
+      const btn  = document.getElementById('btn-otp');
+
+      if (!code || !otp) {
+        msg.textContent = "❌ أدخل الكود و OTP.";
+        return;
+      }
+
+      btn.disabled = true;
+      msg.textContent = "⏳ جاري التحقق من OTP...";
+
+      try {
+        const res = await fetch('/api/verify-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, otp })
+        });
+        const data = await res.json();
+
+        if (data.ok && data.invite_link) {
+          msg.innerHTML = "✅ تم قبول الجهاز الجديد! جارٍ تحويلك...";
+          window.location.href = data.invite_link;
+        } else {
+          msg.textContent = data.message || "❌ خطأ غير معروف.";
+        }
+      } catch (e) {
+        msg.textContent = "⚠ مشكل في الإتصال بالسيرفر.";
+      }
+
+      btn.disabled = false;
+    }
+  </script>
+</body>
+</html>
