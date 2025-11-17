@@ -1,0 +1,221 @@
+from flask import Flask, request, jsonify, render_template
+import json, os, hashlib, random, threading
+import telebot
+
+# ========= الإعدادات =========
+BOT_TOKEN  = "8064352180:AAGEzj6mROn7sBl5r8lRPAxwtP5V_zIFzrA"
+CHANNEL_ID = -1002675184687
+ADMIN_ID   = 6731717152
+
+USERS_FILE = "users.json"
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+app = Flask(__name__)
+
+
+# ========= Helpers: JSON =========
+def load_users():
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_users(data):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def get_user(user_id: int):
+    users = load_users()
+    uid = str(user_id)
+
+    if uid not in users:
+        users[uid] = {
+            "code": None,
+            "fingerprint": None,
+            "verified": False,
+            "invite_link": None,
+            "banned": False,
+            "otp": None,
+            "otp_attempts": 0,
+            "otp_required": False
+        }
+        save_users(users)
+
+    return users[uid]
+
+def update_user(user_id: int, new_data: dict):
+    users = load_users()
+    users[str(user_id)] = { **users.get(str(user_id), {}), **new_data }
+    save_users(users)
+
+
+# ========= Fingerprint + OTP =========
+def make_fingerprint(req):
+    ip   = req.headers.get("X-Forwarded-For", req.remote_addr)
+    ua   = req.headers.get("User-Agent", "")
+    lang = req.headers.get("Accept-Language", "")
+    raw  = f"{ip}|{ua}|{lang}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def generate_otp():
+    return str(random.randint(100000, 999999))
+
+
+# ========= Link Invite =========
+def create_one_time_link():
+    invite = bot.create_chat_invite_link(
+        CHAT_ID := CHANNEL_ID,
+        member_limit=1
+    )
+    return invite.invite_link
+
+
+# ========= Telegram Bot =========
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    user_id = message.from_user.id
+    data = get_user(user_id)
+
+    if data.get("banned"):
+        bot.reply_to(message, "⛔ أنت محظور.")
+        return
+
+    if not data.get("code"):
+        code = str(random.randint(100000, 999999))
+        update_user(user_id, {"code": code})
+    else:
+        code = data["code"]
+
+    site_url = "https://formation-digital-services-1.onrender.com/access"
+
+    txt = (
+        "👋 أهلاً بيك في *Formation digital services*\n\n"
+        "🔐 هذا كود الدخول الخاص بيك:\n"
+        f"`{code}`\n\n"
+        "✔️ ادخل للموقع وحط الكود.\n\n"
+        f"🌐 رابط الموقع:\n{site_url}"
+    )
+
+    bot.reply_to(message, txt)
+
+
+# ========= Flask Routes =========
+@app.route("/")
+def home():
+    return "Server is running ✔"
+
+@app.route("/access")
+def access_page():
+    return render_template("access.html")
+
+
+# ========= API: ACCESS =========
+@app.route("/api/access", methods=["POST"])
+def api_access():
+    data = request.get_json(silent=True) or {}
+    code = (data.get("code") or "").strip()
+
+    if not code.isdigit():
+        return jsonify({"ok": False, "message": "❌ الكود غير صالح."})
+
+    users = load_users()
+    user_id, user_info = None, None
+
+    for uid, info in users.items():
+        if str(info.get("code")) == code:
+            user_id = int(uid)
+            user_info = info
+            break
+
+    if not user_id:
+        return jsonify({"ok": False, "message": "❌ الكود غير موجود."})
+
+    if user_info.get("banned"):
+        return jsonify({"ok": False, "message": "⛔ أنت محظور."})
+
+    current_fp = make_fingerprint(request)
+
+    # جهاز جديد
+    if not user_info.get("fingerprint"):
+        user_info.update({
+            "fingerprint": current_fp,
+            "verified": True,
+            "otp": None,
+            "otp_attempts": 0,
+            "otp_required": False
+        })
+        save_users(users)
+
+        link = create_one_time_link()
+        user_info["invite_link"] = link
+        save_users(users)
+
+        return jsonify({"ok": True, "invite_link": link})
+
+    # نفس الجهاز
+    if user_info.get("fingerprint") == current_fp:
+        link = create_one_time_link()
+        user_info["invite_link"] = link
+        save_users(users)
+
+        return jsonify({"ok": True, "invite_link": link})
+
+    # جهاز جديد → لازم OTP
+    otp = generate_otp()
+    user_info.update({
+        "otp": otp,
+        "otp_required": True,
+        "otp_attempts": 0
+    })
+    save_users(users)
+
+    bot.send_message(user_id, f"🔐 جهاز جديد.\nOTP:\n`{otp}`")
+    bot.send_message(ADMIN_ID, f"⚠️ جهاز جديد للمستخدم {user_id}")
+
+    return jsonify({"ok": False, "need_otp": True, "message": "⚠ تم إرسال OTP إلى البوت."})
+
+
+# ========= API: VERIFY OTP =========
+@app.route("/api/verify-otp", methods=["POST"])
+def api_verify():
+    data = request.get_json(silent=True) or {}
+    code = data.get("code", "").strip()
+    otp  = data.get("otp", "").strip()
+
+    users = load_users()
+    user_id, user_info = None, None
+
+    for uid, info in users.items():
+        if str(info.get("code")) == code:
+            user_id = int(uid)
+            user_info = info
+            break
+
+    if not user_id:
+        return jsonify({"ok": False, "message": "❌ الكود غير موجود."})
+
+    if otp != user_info.get("otp"):
+        return jsonify({"ok": False, "message": "❌ OTP غلط."})
+
+    current_fp = make_fingerprint(request)
+    user_info.update({
+        "fingerprint": current_fp,
+        "verified": True,
+        "otp": None,
+        "otp_required": False
+    })
+    save_users(users)
+
+    link = create_one_time_link()
+    user_info["invite_link"] = link
+    save_users(users)
+
+    return jsonify({"ok": True, "invite_link": link})
+
+
+# ========= Run Bot Thread =========
+def run_bot():
+    bot.infinity_polling(skip_pending=True)
+
+threading.Thread(target=run_bot, daemon=True).start()
